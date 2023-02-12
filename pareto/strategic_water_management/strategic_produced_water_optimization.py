@@ -362,6 +362,7 @@ def create_model(df_sets, df_parameters, default={}):
     model.s_B = Set(
         initialize=model.df_sets["TreatmentTechnologies"], doc="Treatment Technologies"
     )
+
     model.df_parameters["LLA"] = {
         **model.df_parameters["PNA"],
         **model.df_parameters["CNA"],
@@ -1342,6 +1343,16 @@ def create_model(df_sets, df_parameters, default={}):
         initialize=model.df_parameters["TreatmentEfficiency"],
         doc="Treatment efficiency [%]",
     )
+
+    model.p_epsilon_removal_Treatment = Param(
+        model.s_R,
+        model.s_B,
+        model.s_W,
+        default=1.0,
+        initialize=model.df_parameters["TreatmentRemovalEfficiency"],
+        doc="Treatment removal efficiency by component [%]",
+    )
+
     # Note PipelineCapacityIncrements_Calculated is set in _pre_process. These values are already in model units, they
     # do not need to be calculated
     if model.config.pipeline_capacity == PipelineCapacity.calculated:
@@ -5522,6 +5533,8 @@ def water_quality(model):
 
     # region Treatment
     def TreatmentWaterQualityRule(b, r, w, t):
+        # TODO: currently, we don't support water quality changes by treatment technology
+        a_treatment_technology = b.parent_block().s_B.first()
         constraint = (
             sum(
                 b.parent_block().v_F_Piped[n, r, t] * b.v_Q[n, w, t]
@@ -5543,10 +5556,8 @@ def water_quality(model):
                 for p in b.parent_block().s_CP
                 if b.parent_block().p_CRT[p, r]
             )
-        ) == b.v_Q[r, w, t] * (
-            b.parent_block().v_F_ResidualWater[r, t]
-            + b.parent_block().v_F_TreatedWater[r, t]
-        )
+        ) * (1-b.parent_block().p_epsilon_removal_Treatment[r,a_treatment_technology,w]) \
+        == b.v_Q[r, w, t] * b.parent_block().v_F_TreatedWater[r, t]
         return process_constraint(constraint)
 
     model.quality.TreatmentWaterQuality = Constraint(
@@ -5556,6 +5567,44 @@ def water_quality(model):
         rule=TreatmentWaterQualityRule,
         doc="Treatment water quality",
     )
+
+    def ResidualWaterQualityRule(b, r, w, t):
+        # TODO: currently, we don't support water quality changes by treatment technology
+        a_treatment_technology = b.parent_block().s_B.first()
+        constraint = (
+            sum(
+                b.parent_block().v_F_Piped[n, r, t] * b.v_Q[n, w, t]
+                for n in b.parent_block().s_N
+                if b.parent_block().p_NRA[n, r]
+            )
+            + sum(
+                b.parent_block().v_F_Piped[s, r, t] * b.v_Q[s, w, t]
+                for s in b.parent_block().s_S
+                if b.parent_block().p_SRA[s, r]
+            )
+            + sum(
+                b.parent_block().v_F_Trucked[p, r, t] * b.p_nu_pad[p, w]
+                for p in b.parent_block().s_PP
+                if b.parent_block().p_PRT[p, r]
+            )
+            + sum(
+                b.parent_block().v_F_Trucked[p, r, t] * b.p_nu_pad[p, w]
+                for p in b.parent_block().s_CP
+                if b.parent_block().p_CRT[p, r]
+            )
+        ) * b.parent_block().p_epsilon_removal_Treatment[r,a_treatment_technology,w] \
+        == b.v_Q[r + treatment_intermediate_label, w, t] * b.parent_block().v_F_ResidualWater[r, t]
+
+        return process_constraint(constraint)
+
+    model.quality.ResidualWaterQuality = Constraint(
+        model.s_R,
+        model.s_W,
+        model.s_T,
+        rule=ResidualWaterQualityRule,
+        doc="Residual water quality",
+    )
+    """
     # Water quality of water that has been treated
     # NOTE: Water quality changes by treatment technologies is not currently modeled
     def TreatedWaterWaterQualityRule(b, r, w, t):
@@ -5583,6 +5632,7 @@ def water_quality(model):
         rule=TreatedWaterWaterQualityRule,
         doc="Treatmed water water quality",
     )
+    """
     # endregion
 
     # region Network
